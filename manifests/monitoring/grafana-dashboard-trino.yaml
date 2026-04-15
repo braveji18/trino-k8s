@@ -1,0 +1,144 @@
+# Trino 전용 Grafana 대시보드 (ConfigMap 기반 sidecar 자동 import)
+#
+# 적용 요구사항:
+#   - grafana-values.yaml에 sidecar.dashboards.enabled=true 설정
+#   - ConfigMap에 label `grafana_dashboard: "1"` 있으면 sidecar가 자동 import
+#
+# 수동 적용:
+#   kubectl apply -n user-braveji -f manifests/monitoring/grafana-dashboard-trino.yaml
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-trino
+  labels:
+    grafana_dashboard: "1"
+data:
+  trino.json: |
+    {
+      "title": "Trino Cluster Overview",
+      "uid": "trino-overview",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": { "text": "Prometheus", "value": "Prometheus" }
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Running Queries",
+          "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "sum(trino_execution_running_queries)", "legendFormat": "running" }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Queued Queries",
+          "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "sum(trino_execution_queued_queries)", "legendFormat": "queued" }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Completed Queries (5m rate)",
+          "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "sum(rate(trino_execution_completedqueries_total[5m]))", "legendFormat": "completed/s" }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Failed Queries (5m rate)",
+          "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "sum(rate(trino_execution_failedqueries_total[5m]))", "legendFormat": "failed/s" }
+          ]
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "JVM Heap Usage (per pod)",
+          "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "jvm_memory_heap_memory_usage_used_bytes", "legendFormat": "{{pod}} used" },
+            { "expr": "jvm_memory_heap_memory_usage_max_bytes",  "legendFormat": "{{pod}} max" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "bytes" } }
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "GC Collection Time (rate, ms/s)",
+          "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "rate(jvm_gc_collectiontime[5m])", "legendFormat": "{{pod}} {{gc}}" }
+          ]
+        },
+        {
+          "id": 20,
+          "type": "timeseries",
+          "title": "Cluster Memory Pool (reserved vs max)",
+          "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "trino_memory_cluster_pool_reservedbytes", "legendFormat": "{{pool}} reserved" },
+            { "expr": "trino_memory_cluster_pool_maxbytes",      "legendFormat": "{{pool}} max" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "bytes" } }
+        },
+        {
+          "id": 21,
+          "type": "timeseries",
+          "title": "Worker Memory Pool (per worker reserved)",
+          "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "trino_memory_pool_reservedbytes", "legendFormat": "{{pod}} {{pool}}" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "bytes" } }
+        },
+        {
+          "id": 30,
+          "type": "timeseries",
+          "title": "Spill Bytes",
+          "gridPos": { "x": 0, "y": 20, "w": 12, "h": 7 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "trino_spiller_totalspilledbytes", "legendFormat": "{{pod}}" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "bytes" } }
+        },
+        {
+          "id": 31,
+          "type": "timeseries",
+          "title": "HMS Call Rate",
+          "gridPos": { "x": 12, "y": 20, "w": 12, "h": 7 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "rate(trino_hive_metastore_getalldatabases_alltime_count[5m])", "legendFormat": "getAllDatabases" },
+            { "expr": "rate(trino_hive_metastore_gettable_alltime_count[5m])",        "legendFormat": "getTable" }
+          ]
+        }
+      ]
+    }

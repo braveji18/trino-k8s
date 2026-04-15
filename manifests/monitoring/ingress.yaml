@@ -1,0 +1,46 @@
+# Prometheus + Grafana 외부 노출
+# *.trino.quantumcns.ai 와일드카드 경로 사용 (mytrino 이슈 회피)
+#
+# 서비스 이름은 helm 설치 후 'kubectl get svc'로 확인하고 실제 이름에 맞춰 조정.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: braveji-grafana
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: braveji-grafana.trino.quantumcns.ai
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: graf-grafana
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: braveji-prometheus
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: braveji-prom.trino.quantumcns.ai
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: prom-prometheus-server
+                port:
+                  number: 80

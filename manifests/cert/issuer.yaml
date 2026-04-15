@@ -1,0 +1,53 @@
+# Self-signed CA + Issuer (사내 CA가 있다면 ca-key-pair Secret을 사내 CA로 교체)
+# 사전 요구: cert-manager가 클러스터에 설치되어 있어야 함
+#   helm repo add jetstack https://charts.jetstack.io
+#   helm install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set crds.enabled=true
+
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned-bootstrap
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: trino-ca
+spec:
+  isCA: true
+  commonName: trino-ca
+  secretName: trino-ca-key-pair
+  duration: 87600h   # 10y
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-bootstrap
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: trino-ca-issuer
+spec:
+  ca:
+    secretName: trino-ca-key-pair
+---
+# Trino Coordinator TLS 인증서 (Ingress + Internal 모두 사용 가능)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: trino-tls
+spec:
+  secretName: trino-tls
+  duration: 8760h    # 1y
+  renewBefore: 720h  # 30d
+  issuerRef:
+    name: trino-ca-issuer
+    kind: Issuer
+  commonName: braveji.trino.quantumcns.ai
+  dnsNames:
+    - braveji.trino.quantumcns.ai
+    - my-trino.user-braveji.svc.cluster.local
+    - my-trino-coordinator.user-braveji.svc.cluster.local

@@ -1,0 +1,185 @@
+
+
+
+k8기반 Trino Runtime 서비스 구축을 할려고 합니다.  구축 단계는 아래 순서대로 진행합니다. 
+순차적으로 진행하는 방법을 단계별로 진행해보죠 ..
+1. Trino cluster 구축
+2. Trino Resource 튜닝
+3. Trino service 설계 (resource quota 설계 등)
+
+
+환경 설정을 아래와 같이 했을때 가능여부와 추천할 사항을 알려줘.
+- k8s 환경: 실제 클러스터(온프렘)
+- Trino 버전: 480 
+- Catalog(데이터 소스): Hive/Iceberg/PostgreSQL/S3 
+- 인증/보안: HTTPS만
+- 스토리지: Catalog(데이터 소스)에 필요하면 추가
+
+
+
+NS=user-braveji
+POD=$(kubectl -n $NS get pod -l app=hive-metastore -o name | head -1)
+
+echo "=== schematool ==="
+kubectl -n $NS logs $POD -c schematool
+
+echo "=== prepare-lib ==="
+kubectl -n $NS logs $POD -c prepare-lib
+
+echo "=== wait-for-pg ==="
+kubectl -n $NS logs $POD -c wait-for-pg
+
+echo "=== download-jdbc ==="
+kubectl -n $NS logs $POD -c download-jdbc
+
+
+echo "=== metastore (current) ==="
+kubectl -n $NS logs $POD -c metastore --tail=80
+
+
+
+download-jdbc (init), prepare-lib (init), wait-for-pg (init), schematool (init)
+
+
+
+# 1. 현재 클러스터의 IngressClass 목록
+kubectl get ingressclass
+
+# 2. 우리 Ingress가 생성되었는지, 어떤 class/host로 되어 있는지
+kubectl -n user-braveji get ingress
+kubectl -n user-braveji describe ingress my-trino
+
+# 3. 공용 nginx-ingress controller 찾기
+kubectl get pods -A | grep -i ingress
+kubectl get svc -A | grep -i ingress
+
+# 4. 우리 Trino coordinator Service
+kubectl -n user-braveji get svc | grep -i trino
+
+
+
+kubectl --namespace user-braveji port-forward svc/my-trino-trino 18080:8080
+
+kubectl run -n $NS  mycurlpod --image=curlimages/curl -i --tty -- sh
+
+kubectl -n user-braveji run curl-test --rm -it --restart=Never --image=curlimages/curl -- \
+  curl -v -H "Host: mytrino.quantumcns.ai" http://qks-ingress-controller.qks-system.svc.cluster.local/ui/
+
+curl -sI http://localhost:18080/ui/
+
+kubectl -n user-braveji run curl-test --rm -i --restart=Never --image=curlimages/curl -- \
+  curl -sv http://localhost:18080/ui/
+
+
+kubectl -n user-braveji run curl-test --rm -i --restart=Never --image=curlimages/curl \
+  --overrides='{"metadata":{"annotations":{"sidecar.istio.io/inject":"false"}},"spec":{"containers":[{"name":"curl-test","image":"curlimages/curl","stdin":true,"args":["curl","-sv","http://my-trino-trino:8080/ui/"]}]}}'
+
+
+# 모든 namespace의 nginx 관련 pod/svc
+kubectl get pods -A | grep -iE 'nginx|ingress'
+kubectl get svc  -A | grep -iE 'nginx|ingress'
+
+# 모든 Ingress 리소스
+kubectl get ingress -A
+
+# IngressClass 전체
+kubectl get ingressclass -o yaml
+
+# Istio-ingressgateway 쪽도
+kubectl get gateway -A
+kubectl get virtualservice -A | grep -i quantum
+
+
+
+
+kubectl -n user-braveji exec deploy/my-trino-trino-coordinator -- \
+  grep -i forwarded /etc/trino/config.properties
+
+
+curl -sIk https://braveji.trino.quantumcns.ai/ui/
+
+###############################################
+# 구축 검증
+###############################################
+
+# 카탈로그 확인
+kubectl -n user-braveji exec -it deploy/my-trino-trino-coordinator -- \
+  trino --execute 'SHOW CATALOGS'
+
+# TPCH로 쿼리 동작 확인
+kubectl -n user-braveji exec -it deploy/my-trino-trino-coordinator -- \
+  trino --execute 'SELECT COUNT(*) FROM tpch.tiny.nation'
+
+# Hive/Iceberg 카탈로그로 스키마/테이블 생성 테스트 (MinIO 쓰기 검증)
+kubectl -n user-braveji exec -it deploy/my-trino-trino-coordinator -- \
+  trino --execute "CREATE SCHEMA iceberg.test WITH (location = 's3a://iceberg/test/')"
+
+kubectl -n user-braveji exec -it deploy/my-trino-trino-coordinator -- \
+  trino --execute "CREATE TABLE iceberg.test.t1 AS SELECT * FROM tpch.tiny.nation"
+
+kubectl -n user-braveji exec -it deploy/my-trino-trino-coordinator -- \
+  trino --execute "SELECT * FROM iceberg.test.t1 LIMIT 5"
+
+
+
+
+NS=user-braveji
+
+# 0) JMX exporter ConfigMap 먼저 배포 (install-monitor.sh에도 포함되었지만 단독으로도 가능)
+kubectl apply -n $NS -f manifests/monitoring/trino-jmx-exporter-config.yaml
+
+# 1) Trino 재배포 (javaagent + annotation 적용)
+helm upgrade --install my-trino my-trino/trino \
+  -n $NS -f helm/values.yaml --wait --timeout 15m
+
+# 2) Trino pod에 annotation/initContainer/볼륨이 실제로 들어갔는지 확인
+POD=$(kubectl -n $NS get pod -l app.kubernetes.io/component=coordinator -o name | head -1)
+kubectl -n $NS get $POD -o jsonpath='{.metadata.annotations}' | jq
+kubectl -n $NS get $POD -o jsonpath='{.spec.initContainers[*].name}'
+kubectl -n $NS exec $POD -c trino-coordinator -- ls -l /opt/jmx-exporter/
+
+# 3) /metrics 엔드포인트 직접 확인
+kubectl -n $NS port-forward $POD 5556:5556 &
+sleep 2
+curl -s http://localhost:5556/metrics | head -40
+# jvm_memory_*, trino_execution_*, trino_memory_* 등이 보여야 함
+kill %1
+
+# 4) Prometheus targets 확인
+kubectl -n $NS port-forward svc/prom-prometheus-server 9090:80 &
+sleep 2
+curl -s http://localhost:9090/api/v1/targets | jq '.data.activeTargets[] | select(.labels.job=="kubernetes-pods-slow") | {pod:.labels.kubernetes_pod_name, health, lastError}'
+# my-trino-* pod가 health=up으로 보여야 함
+kill %1
+
+
+
+
+
+
+cd docker/trino-with-jmx
+
+# 빌드
+docker build -t harbor.quantumcns.ai/akashiq/trino:480-jmx .
+
+# push 전 로그인 (첫 1회)
+docker login harbor.quantumcns.ai
+
+# push
+docker push harbor.quantumcns.ai/akashiq/trino:480-jmx
+
+cd ../..
+
+# Trino 재배포
+NS=user-braveji
+helm upgrade --install my-trino my-trino/trino \
+  -n $NS -f helm/values.yaml --wait --timeout 15m
+
+# 검증
+kubectl -n $NS get pod -l app.kubernetes.io/name=trino
+POD=$(kubectl -n $NS get pod -l app.kubernetes.io/component=coordinator -o name | head -1)
+kubectl -n $NS exec $POD -c trino-coordinator -- ls -l /opt/jmx-exporter/
+kubectl -n $NS port-forward $POD 5556:5556 &
+sleep 2 && curl -s http://localhost:5556/metrics | head -30
+kill %1
+

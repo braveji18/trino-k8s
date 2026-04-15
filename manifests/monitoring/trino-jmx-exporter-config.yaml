@@ -1,0 +1,106 @@
+# JMX Exporter javaagent 설정
+# Trino의 JMX MBean을 Prometheus 메트릭으로 변환하는 룰.
+#
+# 적용:
+#   kubectl apply -n user-braveji -f manifests/monitoring/trino-jmx-exporter-config.yaml
+#
+# 이 ConfigMap은 Trino Helm chart 배포 시 coordinator/worker pod에
+# /etc/jmx-exporter/config.yaml 로 마운트됨.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-jmx-exporter-config
+data:
+  config.yaml: |
+    # lowercaseOutputName/lowercaseOutputLabelNames:
+    #   MBean 이름/라벨을 snake_case로 소문자화 → Prometheus 관례 준수
+    lowercaseOutputName: true
+    lowercaseOutputLabelNames: true
+
+    # startDelaySeconds:
+    #   javaagent가 즉시 스크랩을 시작하면 Trino 초기화 중 짧은 pause 발생 가능
+    startDelaySeconds: 0
+
+    # 기본은 블랙리스트 없이 모든 MBean 노출, rules로 이름만 깔끔히 리라벨
+    rules:
+      # ------------------------------------------------------------------
+      # JVM 기본 메트릭 (jmx_exporter 기본 rule로도 충분하지만 명시)
+      # ------------------------------------------------------------------
+      - pattern: 'java.lang<type=Memory><(HeapMemoryUsage|NonHeapMemoryUsage)>(committed|init|max|used)'
+        name: jvm_memory_$1_$2_bytes
+        type: GAUGE
+
+      - pattern: 'java.lang<type=GarbageCollector, name=(.+)><>(CollectionCount|CollectionTime)'
+        name: jvm_gc_$2
+        labels:
+          gc: "$1"
+        type: COUNTER
+
+      - pattern: 'java.lang<type=Threading><>(ThreadCount|PeakThreadCount|DaemonThreadCount)'
+        name: jvm_threads_$1
+        type: GAUGE
+
+      # ------------------------------------------------------------------
+      # Trino 쿼리/태스크 매니저
+      # ------------------------------------------------------------------
+      - pattern: 'trino.execution<name=QueryManager><>(RunningQueries|QueuedQueries|BlockedQueries)'
+        name: trino_execution_$1
+        type: GAUGE
+
+      - pattern: 'trino.execution<name=QueryManager><>(StartedQueries|CompletedQueries|FailedQueries)\.TotalCount'
+        name: trino_execution_$1_total
+        type: COUNTER
+
+      - pattern: 'trino.execution<name=SqlTaskManager><>(InputDataSize|OutputDataSize|InputPositions|OutputPositions)\.TotalCount'
+        name: trino_execution_tasks_$1_total
+        type: COUNTER
+
+      # ------------------------------------------------------------------
+      # Trino 메모리
+      # ------------------------------------------------------------------
+      - pattern: 'trino.memory<type=ClusterMemoryPool, name=(.+)><>(ReservedBytes|MaxBytes|AssignedQueries|BlockedNodes)'
+        name: trino_memory_cluster_pool_$2
+        labels:
+          pool: "$1"
+        type: GAUGE
+
+      - pattern: 'trino.memory<type=MemoryPool, name=(.+)><>(ReservedBytes|MaxBytes)'
+        name: trino_memory_pool_$2
+        labels:
+          pool: "$1"
+        type: GAUGE
+
+      - pattern: 'trino.memory<name=ClusterMemoryManager><>(TotalAvailableProcessors|ClusterUserMemoryReservation|ClusterMemoryBytes|ClusterTotalMemoryReservation|QueriesKilledDueToOutOfMemory)'
+        name: trino_memory_cluster_$1
+        type: GAUGE
+
+      # ------------------------------------------------------------------
+      # Trino 스케줄러 / Split
+      # ------------------------------------------------------------------
+      - pattern: 'trino.execution.scheduler<name=SplitSchedulerStats><>(SleepTime|ScheduleSplitTime|GetSplitTime)\.(.+)'
+        name: trino_scheduler_$1_$2
+        type: GAUGE
+
+      # ------------------------------------------------------------------
+      # Trino spill
+      # ------------------------------------------------------------------
+      - pattern: 'trino.spiller<name=SpillerStats><>(TotalSpilledBytes|SpillsInProgress)'
+        name: trino_spiller_$1
+        type: GAUGE
+
+      # ------------------------------------------------------------------
+      # Hive 커넥터 (HMS 지연 등)
+      # ------------------------------------------------------------------
+      - pattern: 'trino.plugin.hive.metastore.thrift<name=hive, type=ThriftMetastoreStats><>(.+)\.(.+)'
+        name: trino_hive_metastore_$1_$2
+        type: GAUGE
+
+      - pattern: 'trino.plugin.hive<name=hive, type=HiveSplitManager><>(.+)'
+        name: trino_hive_split_manager_$1
+        type: GAUGE
+
+      # ------------------------------------------------------------------
+      # Fallback — 매칭 안 되는 MBean은 자동 이름으로 노출
+      # ------------------------------------------------------------------
+      # (없으면 기본 jmx_exporter 포맷 사용: jmx_..._metric)

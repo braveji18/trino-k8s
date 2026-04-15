@@ -1,0 +1,63 @@
+# Prometheus — user-braveji 전용 (Trino 튜닝 측정용)
+# 차트: prometheus-community/prometheus
+#
+# 설치:
+#   helm upgrade --install prom prometheus-community/prometheus \
+#     -n user-braveji -f helm/prometheus-values.yaml
+
+# Prometheus server 자체만 사용 — 다른 컴포넌트 전부 비활성
+alertmanager:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false
+kube-state-metrics:
+  enabled: false
+
+server:
+  # Istio sidecar 비활성화 (데이터 인프라 일괄 정책)
+  podAnnotations:
+    sidecar.istio.io/inject: "false"
+
+  retention: "3d"   # 7d → 3d (대규모 cluster 기본 대응)
+
+  persistentVolume:
+    enabled: true
+    size: 10Gi
+    storageClass: qks-ceph-block
+
+  # 최소 scope 기준. scrape 대상이 작으므로 기본 2Gi로 충분.
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+
+  service:
+    type: ClusterIP
+
+  # chart의 serverFiles가 append 방식으로 default scrape_configs를 병합해
+  # OOM을 유발. 외부 ConfigMap으로 교체.
+  # 사전 요구: kubectl apply -f manifests/monitoring/prometheus-custom-config.yaml
+  configMapOverrideName: prometheus-custom-config
+
+# serverFiles는 더 이상 사용하지 않음 — configMapOverrideName(위)으로
+# manifests/monitoring/prometheus-custom-config.yaml의 ConfigMap을 직접 마운트.
+
+# 역할용 RBAC — pod service discovery에 필요
+rbac:
+  create: true
+serviceAccounts:
+  server:
+    create: true
+    name: prometheus-server
+
+# Ingress (외부 접속)
+server_ingress:
+  enabled: false  # 아래 ingress 키로 대체 (chart 버전에 따라 다를 수 있음)
+
+ingress:
+  enabled: false  # 2단계에서 별도 Ingress 리소스로 노출

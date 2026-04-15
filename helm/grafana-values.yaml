@@ -1,0 +1,84 @@
+# Grafana — user-braveji 전용
+# 차트: grafana/grafana
+#
+# 설치:
+#   helm upgrade --install graf grafana/grafana \
+#     -n user-braveji -f helm/grafana-values.yaml
+
+# 관리자 초기 비밀번호 (첫 로그인 후 반드시 변경)
+adminUser: admin
+adminPassword: changeme-grafana
+
+# Istio sidecar 비활성화
+podAnnotations:
+  sidecar.istio.io/inject: "false"
+
+persistence:
+  enabled: true
+  size: 5Gi
+  storageClassName: qks-ceph-block
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "256Mi"
+  limits:
+    cpu: "500m"
+    memory: "1Gi"
+
+service:
+  type: ClusterIP
+  port: 80
+
+# Prometheus datasource를 자동 구성
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        # user-braveji 내부 DNS — chart가 생성한 실제 서비스 이름과 맞춰야 함
+        # helm ls 후 실제 이름 확인 필요 (기본: prom-prometheus-server)
+        url: http://prom-prometheus-server.user-braveji.svc.cluster.local
+        isDefault: true
+        editable: true
+
+# Ingress (외부 접속)
+ingress:
+  enabled: false  # 3단계에서 별도 Ingress 리소스로 노출
+
+# ConfigMap 기반 sidecar 자동 import
+# label `grafana_dashboard=1`이 달린 ConfigMap을 발견하면 자동 등록
+sidecar:
+  dashboards:
+    enabled: true
+    label: grafana_dashboard
+    labelValue: "1"
+    searchNamespace: ALL
+    folder: /tmp/dashboards
+    provider:
+      foldersFromFilesStructure: true
+  datasources:
+    enabled: false    # datasources는 아래 datasources.datasources.yaml 로 관리
+
+# (레거시) gnetId 기반 자동 import는 유지 — JVM 기본 대시보드
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: 'default'
+        orgId: 1
+        folder: ''
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/default
+
+dashboards:
+  default:
+    jvm-micrometer:
+      gnetId: 4701
+      revision: 9
+      datasource: Prometheus

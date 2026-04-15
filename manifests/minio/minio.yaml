@@ -1,0 +1,115 @@
+# MinIO (S3 호환 Object Storage) - POC용 Standalone
+# 운영에서는 minio-operator 또는 distributed mode 권장.
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-credentials
+type: Opaque
+stringData:
+  MINIO_ROOT_USER: minioadmin
+  MINIO_ROOT_PASSWORD: changeme-minio-admin
+  # Trino/HMS가 사용할 액세스키 (init job에서 생성하거나 root 사용)
+  AWS_ACCESS_KEY_ID: minioadmin
+  AWS_SECRET_ACCESS_KEY: changeme-minio-admin
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+spec:
+  selector:
+    app: minio
+  ports:
+    - name: api
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+spec:
+  serviceName: minio
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+          args:
+            - server
+            - /data
+            - --console-address
+            - ":9001"
+          envFrom:
+            - secretRef:
+                name: minio-credentials
+          ports:
+            - containerPort: 9000
+            - containerPort: 9001
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 500Gi
+        # storageClassName: <온프렘 스토리지 클래스>
+---
+# 초기 버킷 생성 Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-create-buckets
+spec:
+  template:
+    metadata:
+      annotations:
+        # Istio sidecar가 붙으면 mc 컨테이너 종료 후에도 istio-proxy가
+        # 계속 살아 Job이 Complete 되지 않음. 일회성 작업이므로 주입 비활성화.
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:RELEASE.2025-01-17T23-25-50Z
+          envFrom:
+            - secretRef:
+                name: minio-credentials
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do
+                echo "waiting for minio..."; sleep 3;
+              done
+              mc mb -p local/warehouse     || true
+              mc mb -p local/iceberg       || true
+              mc mb -p local/hms-pg-backup || true
+              mc anonymous set none local/warehouse
+              mc anonymous set none local/iceberg
+              mc anonymous set none local/hms-pg-backup
+              echo "buckets ready"

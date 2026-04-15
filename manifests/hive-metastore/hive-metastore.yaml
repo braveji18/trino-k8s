@@ -1,0 +1,238 @@
+# Standalone Hive Metastore (HMS) 3.1.3
+# 이미지: apache/hive:3.1.3 (SERVICE_NAME=metastore 모드)
+#
+# 설정:
+#   - /opt/hive/conf/hive-site.xml 로 마운트 (이미지 entrypoint 표준 경로)
+#   - postgres JDBC: 이미지에 번들되지 않음 → initContainer로 다운로드/주입
+#   - schematool: entrypoint가 SCHEMA_COMMAND 환경변수로 처리하지 않으므로
+#                 initContainer에서 명시 실행. 실패 시 즉시 종료.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hms-config
+data:
+  hive-site.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <property>
+        <name>hive.metastore.uris</name>
+        <value>thrift://hive-metastore:9083</value>
+      </property>
+      <property>
+        <name>hive.metastore.event.db.notification.api.auth</name>
+        <value>false</value>
+      </property>
+      <property>
+        <name>metastore.task.threads.always</name>
+        <value>org.apache.hadoop.hive.metastore.events.EventCleanerTask</value>
+      </property>
+      <property>
+        <name>metastore.expression.proxy</name>
+        <value>org.apache.hadoop.hive.metastore.DefaultPartitionExpressionProxy</value>
+      </property>
+      <property>
+        <name>javax.jdo.option.ConnectionURL</name>
+        <value>jdbc:postgresql://hms-postgres-rw:5432/metastore?sslmode=disable</value>
+      </property>
+      <property>
+        <name>javax.jdo.option.ConnectionDriverName</name>
+        <value>org.postgresql.Driver</value>
+      </property>
+      <property>
+        <name>javax.jdo.option.ConnectionUserName</name>
+        <value>hive</value>
+      </property>
+      <property>
+        <name>javax.jdo.option.ConnectionPassword</name>
+        <value>changeme-hive-pg</value>
+      </property>
+      <property>
+        <name>hive.metastore.warehouse.dir</name>
+        <value>s3a://warehouse/</value>
+      </property>
+      <!-- S3A (MinIO) 설정 -->
+      <property>
+        <name>fs.s3a.endpoint</name>
+        <value>http://minio:9000</value>
+      </property>
+      <property>
+        <name>fs.s3a.path.style.access</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>fs.s3a.connection.ssl.enabled</name>
+        <value>false</value>
+      </property>
+      <property>
+        <name>fs.s3a.access.key</name>
+        <value>minioadmin</value>
+      </property>
+      <property>
+        <name>fs.s3a.secret.key</name>
+        <value>changeme-minio-admin</value>
+      </property>
+      <property>
+        <name>fs.s3a.aws.credentials.provider</name>
+        <value>org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider</value>
+      </property>
+    </configuration>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hive-metastore
+spec:
+  selector:
+    app: hive-metastore
+  ports:
+    - name: thrift
+      port: 9083
+      targetPort: 9083
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hive-metastore
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hive-metastore
+  template:
+    metadata:
+      labels:
+        app: hive-metastore
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      initContainers:
+        # 1) postgres JDBC jar 다운로드
+        #    air-gapped 환경이면 사내 미러 URL로 교체하거나
+        #    pre-built 이미지를 사용하세요.
+        - name: download-jdbc
+          image: curlimages/curl:8.10.1
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              curl -fsSL -o /jdbc/postgresql.jar \
+                https://jdbc.postgresql.org/download/postgresql-42.7.4.jar
+              ls -l /jdbc/
+          volumeMounts:
+            - name: jdbc-jar
+              mountPath: /jdbc
+        # 2) Hive lib 디렉토리 복사 + postgres jar 추가
+        #    (메인 컨테이너의 /opt/hive/lib을 가리지 않기 위해 전체 복사)
+        - name: prepare-lib
+          image: apache/hive:3.1.3
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              cp -r /opt/hive/lib/. /hive-lib/
+              # Hive 3.1.3가 번들한 구버전 postgres JDBC 드라이버 제거
+              # (SCRAM-SHA-256 미지원 → PG 14+ 인증 실패 원인)
+              echo "removing bundled postgres jars (if any):"
+              ls /hive-lib/ | grep -i '^postgresql' || true
+              rm -f /hive-lib/postgresql-*.jar /hive-lib/postgresql.jar
+              cp /jdbc/postgresql.jar /hive-lib/postgresql-42.7.4.jar
+              echo "active postgres jar:"
+              ls -l /hive-lib/postgresql*.jar
+              # hadoop-aws + aws-sdk를 hive classpath로 복사
+              # (S3AFileSystem 클래스 로드용. /opt/hadoop/share/hadoop/tools/lib에만 존재)
+              echo "copying hadoop-aws jars:"
+              ls /opt/hadoop/share/hadoop/tools/lib/ | grep -E 'hadoop-aws|aws-java-sdk' || true
+              cp /opt/hadoop/share/hadoop/tools/lib/hadoop-aws-*.jar /hive-lib/ 2>/dev/null || echo "WARN: hadoop-aws jar not found"
+              cp /opt/hadoop/share/hadoop/tools/lib/aws-java-sdk-*.jar /hive-lib/ 2>/dev/null || echo "WARN: aws-java-sdk jar not found"
+              echo "s3a related jars in hive-lib:"
+              ls /hive-lib/ | grep -E 'hadoop-aws|aws-java-sdk' || true
+              echo "hive-lib prepared"
+          volumeMounts:
+            - name: hive-lib
+              mountPath: /hive-lib
+            - name: jdbc-jar
+              mountPath: /jdbc
+        # 3) PG ready 대기
+        - name: wait-for-pg
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z hms-postgres-rw 5432; do
+                echo "waiting for hms-postgres-rw:5432..."; sleep 2;
+              done
+              echo "postgres ready"
+        # 4) 스키마 초기화 (이미 초기화된 경우 skip)
+        - name: schematool
+          image: apache/hive:3.1.3
+          env:
+            - name: SERVICE_NAME
+              value: metastore
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              if /opt/hive/bin/schematool -info -dbType postgres >/dev/null 2>&1; then
+                echo "schema already initialized, skipping"
+              else
+                echo "initializing schema..."
+                /opt/hive/bin/schematool -initSchema -dbType postgres -verbose
+              fi
+          volumeMounts:
+            - name: hive-lib
+              mountPath: /opt/hive/lib
+            - name: config
+              mountPath: /opt/hive/conf/hive-site.xml
+              subPath: hive-site.xml
+      containers:
+        - name: metastore
+          image: apache/hive:3.1.3
+          # 이미지 entrypoint script가 SKIP_SCHEMA_INIT=false를 하드코딩하여
+          # 매 기동 시 schematool -initSchema를 재실행 → 이미 초기화된 DB에서 실패.
+          # entrypoint를 우회하고 metastore를 직접 기동.
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              export HIVE_CONF_DIR=/opt/hive/conf
+              export HADOOP_CLIENT_OPTS="${HADOOP_CLIENT_OPTS:--Xmx1G}"
+              exec /opt/hive/bin/hive --service metastore
+          env:
+            - name: SERVICE_NAME
+              value: metastore
+            - name: DB_DRIVER
+              value: postgres
+          ports:
+            - containerPort: 9083
+          volumeMounts:
+            - name: hive-lib
+              mountPath: /opt/hive/lib
+            - name: config
+              mountPath: /opt/hive/conf/hive-site.xml
+              subPath: hive-site.xml
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          readinessProbe:
+            tcpSocket:
+              port: 9083
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: hms-config
+        - name: jdbc-jar
+          emptyDir: {}
+        - name: hive-lib
+          emptyDir: {}

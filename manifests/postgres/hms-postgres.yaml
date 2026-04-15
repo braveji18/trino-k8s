@@ -1,0 +1,128 @@
+# Hive Metastore Backend PostgreSQL (CloudNativePG)
+#
+# 사전 요구:
+#   1) cnpg operator 설치
+#      kubectl apply --server-side -f \
+#        https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-1.24.1.yaml
+#   2) MinIO 배포 및 hms-pg-backup 버킷 존재 (minio.yaml init job이 생성)
+#   (선택) Prometheus Operator 설치 시 monitoring.enablePodMonitor: true
+#
+# CNPG가 자동 생성하는 서비스:
+#   - hms-postgres-rw  : primary (read/write)   ← HMS는 이 호스트로 접속
+#   - hms-postgres-ro  : replica (read-only)
+#   - hms-postgres-r   : 모든 인스턴스
+#
+# 구성:
+#   - HA: 3 인스턴스 (1 primary + 2 standby, 자동 failover)
+#   - WAL 아카이빙: MinIO (s3://hms-pg-backup/)
+#   - 모니터링: PodMonitor
+
+# --- App user secret ----------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hms-postgres-app
+  labels:
+    cnpg.io/reload: "true"
+type: kubernetes.io/basic-auth
+stringData:
+  username: hive
+  password: changeme-hive-pg
+---
+# --- Backup S3 credentials (MinIO) --------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hms-postgres-backup-s3
+  labels:
+    cnpg.io/reload: "true"
+type: Opaque
+stringData:
+  ACCESS_KEY_ID: minioadmin
+  ACCESS_KEY_SECRET: changeme-minio-admin
+---
+# --- CNPG Cluster -------------------------------------------------------
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: hms-postgres
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.4
+
+  # CNPG가 생성하는 모든 PG pod와 백업 job에 동일 annotation 전파
+  # → Istio sidecar 주입 비활성화 (Job-stuck 및 initContainer 통신 이슈 회피)
+  inheritedMetadata:
+    annotations:
+      sidecar.istio.io/inject: "false"
+
+  # 분산 배치 (가능한 한 다른 노드/존)
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: preferred
+
+  primaryUpdateStrategy: unsupervised
+
+  bootstrap:
+    initdb:
+      database: metastore
+      owner: hive
+      secret:
+        name: hms-postgres-app
+
+  storage:
+    size: 50Gi
+    storageClass: qks-ceph-block
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_buffers: "512MB"
+      work_mem: "16MB"
+
+  # --- WAL 아카이빙 + 베이스 백업 (MinIO) -------------------------------
+  backup:
+    retentionPolicy: "30d"
+    barmanObjectStore:
+      destinationPath: s3://hms-pg-backup/
+      endpointURL: http://minio:9000
+      s3Credentials:
+        accessKeyId:
+          name: hms-postgres-backup-s3
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: hms-postgres-backup-s3
+          key: ACCESS_KEY_SECRET
+      wal:
+        compression: gzip
+        maxParallel: 4
+      data:
+        compression: gzip
+
+  # --- 모니터링 ---------------------------------------------------------
+  # Prometheus Operator 미설치 환경 → PodMonitor 비활성화.
+  # 추후 kube-prometheus-stack 도입 시 true로 전환.
+  monitoring:
+    enablePodMonitor: false
+---
+# --- 정기 베이스 백업 (매일 02:00) ---------------------------------------
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: hms-postgres-daily
+spec:
+  # CNPG cron: 6 fields (sec min hour dom mon dow)
+  schedule: "0 0 2 * * *"
+  backupOwnerReference: self
+  cluster:
+    name: hms-postgres
+  immediate: true

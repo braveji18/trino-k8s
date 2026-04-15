@@ -1,0 +1,78 @@
+# 분석용 PostgreSQL (Trino postgresql catalog 대상)
+# CNPG Cluster로 배포. HMS backend PG와 분리 — 데이터/메타데이터 격리.
+#
+# 서비스:
+#   analytics-postgres-rw : primary (Trino가 접속)
+#   analytics-postgres-ro : replica
+#
+# POC 스펙: 1 instance, 10Gi, 백업 없음. 운영 전환 시 instances>=3 + backup 추가.
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: analytics-postgres-app
+  labels:
+    cnpg.io/reload: "true"
+type: kubernetes.io/basic-auth
+stringData:
+  username: trino_ro
+  password: changeme-analytics-pg
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: analytics-postgres
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.4
+
+  inheritedMetadata:
+    annotations:
+      sidecar.istio.io/inject: "false"
+
+  bootstrap:
+    initdb:
+      database: analytics
+      owner: trino_ro
+      secret:
+        name: analytics-postgres-app
+      # 샘플 스키마/데이터 — Trino catalog 동작 확인용
+      # postInitApplicationSQL은 superuser로 실행됨 → 스키마/테이블 소유권을
+      # trino_ro로 넘겨야 Trino가 읽을 수 있음
+      postInitApplicationSQL:
+        - CREATE SCHEMA IF NOT EXISTS sales AUTHORIZATION trino_ro;
+        - |
+          CREATE TABLE IF NOT EXISTS sales.orders (
+            order_id   BIGINT PRIMARY KEY,
+            customer   TEXT NOT NULL,
+            amount     NUMERIC(12,2) NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          );
+        - ALTER TABLE sales.orders OWNER TO trino_ro;
+        - |
+          INSERT INTO sales.orders (order_id, customer, amount) VALUES
+            (1, 'alpha',  100.00),
+            (2, 'beta',   250.50),
+            (3, 'gamma',   42.00)
+          ON CONFLICT DO NOTHING;
+
+  storage:
+    size: 10Gi
+    storageClass: qks-ceph-block
+
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_buffers: "256MB"
+      work_mem: "8MB"
+
+  monitoring:
+    enablePodMonitor: false

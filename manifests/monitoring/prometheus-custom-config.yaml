@@ -1,0 +1,71 @@
+# Prometheus 커스텀 config — chart default scrape_configs를 완전히 대체
+#
+# prometheus-community/prometheus 차트는 serverFiles.prometheus.yml을 override해도
+# default scrape_configs를 replace가 아닌 append로 병합함.
+# 이를 회피하려면 server.configMapOverrideName으로 외부 ConfigMap을 쓰게 함.
+#
+# 적용:
+#   kubectl apply -n user-braveji -f manifests/monitoring/prometheus-custom-config.yaml
+
+# 중요: 이름은 반드시 '<helm-release>-<configMapOverrideName>' 규칙을 따라야 함.
+# prometheus-community/prometheus chart가 pod spec에 fullname prefix를 자동으로
+# 붙이기 때문. install-monitor.sh가 __PROM_RELEASE__를 실제 release 이름으로
+# 치환한 뒤 apply 함. 수동 apply 시에도 동일하게 환경변수 치환 필요:
+#   PROM_RELEASE=prom envsubst < manifests/monitoring/prometheus-custom-config.yaml | kubectl apply -n user-braveji -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: __PROM_RELEASE__-prometheus-custom-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 30s
+      evaluation_interval: 30s
+      scrape_timeout: 10s
+
+    scrape_configs:
+      # --- 1) Prometheus 자기 자신 ---
+      - job_name: prometheus
+        static_configs:
+          - targets:
+              - localhost:9090
+
+      # --- 2) Trino pod (user-braveji) ---
+      - job_name: trino
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - user-braveji
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            action: keep
+            regex: trino
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            target_label: trino_component
+
+  # chart 템플릿이 이들 파일을 참조할 수 있으므로 빈 내용으로 제공
+  alerting_rules.yml: |
+    {}
+  recording_rules.yml: |
+    {}
+  rules: |
+    {}
+  alerts: |
+    {}
