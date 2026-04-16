@@ -301,6 +301,179 @@ GROUP BY c.nation_name
 "
 ```
 
+## 6) TPC-H 스케일 업 — SF1 → SF100 → SF1000+
+
+Trino에 내장된 `tpch` 커넥터는 **scale factor(SF) 별로 미리 정의된 스키마**를
+제공하므로, 별도 데이터 로딩 없이 카탈로그 이름만 바꿔 가며 데이터 크기를 조절할
+수 있음. 5절의 `sf1`은 약 1GB(orders 1.5M rows) 수준의 가벼운 워크로드라
+리소스 튜닝이나 스케일-아웃 효과를 체감하기엔 작음. SF를 키우면 같은 쿼리로
+**워커 수/메모리/네트워크/디스크** 한계를 순차적으로 드러낼 수 있음.
+
+### 6-1) 사용 가능한 scale factor
+
+| 스키마 | 대략적 원시 데이터 크기 | `orders` rows | `lineitem` rows | 용도 |
+|---|---|---|---|---|
+| `tpch.tiny`   | ~1 MB    | 15,000        | 60,175          | 연결 검증 |
+| `tpch.sf1`    | ~1 GB    | 1.5 M         | 6 M             | 기능 검증 / 로컬 스모크 |
+| `tpch.sf10`   | ~10 GB   | 15 M          | 60 M            | 단일 워커 한계 / 메모리 튜닝 |
+| `tpch.sf100`  | ~100 GB  | 150 M         | 600 M           | 분산 실행 / shuffle 비용 관찰 |
+| `tpch.sf300`  | ~300 GB  | 450 M         | 1.8 B           | 중간 단계 |
+| `tpch.sf1000` | ~1 TB    | 1.5 B         | 6 B             | 클러스터 전체 한계 / spill 동작 |
+
+> `tpch` 커넥터는 쿼리 시점에 **메모리 상에서 데이터를 생성**함 (디스크 저장 X).
+> 즉 SF1000을 돌려도 스토리지는 소모되지 않지만 **CPU와 메모리는 실제로** 해당
+> 크기만큼 요구됨 — 따라서 실 클러스터 용량에서 튜닝 한계를 탐색하기에 적합함.
+
+### 6-2) SF 파라미터화된 벤치마크 쿼리
+
+5-2절의 쿼리를 SF만 바꿔 가며 돌릴 수 있도록 함수화. `customer_big` CTAS 없이
+바로 `tpch.<sf>.customer`/`orders`/`nation`/`region`을 참조.
+
+```bash
+# SF 인자를 받아 federated-style 대용량 쿼리를 실행하는 헬퍼
+ # sf1 | sf10 | sf100 | sf300 | sf1000  
+tq_sf() {
+  local SF="$1"   
+  start=$(date +%s)
+  tq "
+  WITH customer_orders AS (
+      SELECT
+          c.custkey,
+          n.name      AS nation_name,
+          n.regionkey,
+          SUM(o.totalprice) AS gross_amount
+      FROM tpch.${SF}.customer c
+      JOIN tpch.${SF}.nation   n ON c.nationkey = n.nationkey
+      JOIN tpch.${SF}.orders   o ON o.custkey   = c.custkey
+      WHERE o.orderdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31'
+      GROUP BY c.custkey, n.name, n.regionkey
+  )
+  SELECT
+      r.name                                      AS tpch_region,
+      t.region_name                               AS hive_region_label,
+      co.nation_name,
+      COUNT(*)                                    AS customer_count,
+      SUM(co.gross_amount)                        AS total_gross,
+      SUM(co.gross_amount * t.adjust_factor)      AS adjusted_total,
+      RANK() OVER (
+          PARTITION BY r.name
+          ORDER BY SUM(co.gross_amount * t.adjust_factor) DESC
+      )                                           AS nation_rank_in_region
+  FROM customer_orders              co
+  JOIN tpch.${SF}.region            r ON r.regionkey = co.regionkey
+  JOIN hive.test.target_regions     t ON t.regionkey = co.regionkey
+  GROUP BY r.name, t.region_name, co.nation_name
+  ORDER BY r.name, adjusted_total DESC
+  "
+  end=$(date +%s)  
+  diff=$((end - start))
+  echo "running(초): $diff"        
+}
+
+# 순차 실행 — 같은 쿼리를 SF만 키우면서 확장성 곡선 측정
+for SF in sf1 sf10 sf100 sf300 sf1000; do
+  echo "=== $SF ==="
+  time tq_sf "$SF"
+done
+```
+
+### 6-3) TPC-H 표준 쿼리 (Q1 / Q6) 로 순수 스캔-집계 성능 측정
+
+federated 조인을 빼고 **커넥터 자체의 스캔/집계 성능**만 측정하려면 TPC-H 표준
+쿼리 중 가장 무거운 `lineitem` 스캔을 쓰는 Q1, Q6을 사용. 워커 CPU/메모리 한계를
+가장 쉽게 드러냄.
+
+```bash
+# Q1: lineitem 전체 스캔 + group by (CPU-bound)
+tq_q1() {
+  local SF="$1"
+  start=$(date +%s)  
+  tq "
+  SELECT
+      l.returnflag,
+      l.linestatus,
+      SUM(l.quantity)                                   AS sum_qty,
+      SUM(l.extendedprice)                              AS sum_base_price,
+      SUM(l.extendedprice * (1 - l.discount))           AS sum_disc_price,
+      SUM(l.extendedprice * (1 - l.discount) * (1 + l.tax)) AS sum_charge,
+      AVG(l.quantity)                                   AS avg_qty,
+      AVG(l.extendedprice)                              AS avg_price,
+      AVG(l.discount)                                   AS avg_disc,
+      COUNT(*)                                          AS count_order
+  FROM tpch.${SF}.lineitem l
+  WHERE l.shipdate <= DATE '1998-12-01' - INTERVAL '90' DAY
+  GROUP BY l.returnflag, l.linestatus
+  ORDER BY l.returnflag, l.linestatus
+  "
+  end=$(date +%s)  
+  diff=$((end - start))
+  echo "running(초): $diff"      
+}
+
+# Q6: 필터가 강한 lineitem 스캔 (push-down/vectorization 확인용)
+tq_q6() {
+  local SF="$1"
+  star=$(date +%s)  
+  tq "
+  SELECT
+      SUM(l.extendedprice * l.discount) AS revenue
+  FROM tpch.${SF}.lineitem l
+  WHERE l.shipdate >= DATE '1994-01-01'
+    AND l.shipdate <  DATE '1995-01-01'
+    AND l.discount BETWEEN 0.05 AND 0.07
+    AND l.quantity <  24
+  "
+  end=$(date +%s)  
+  diff=$((end - start))
+  echo "running(초): $diff"    
+
+}
+
+for SF in sf1 sf10 sf100 sf300 sf1000; do
+  echo "---- $SF ----------------";
+  echo "--- Q1 $SF ---"; time tq_q1 "$SF"
+  echo "--- Q6 $SF ---"; time tq_q6 "$SF"
+done
+```
+
+### 6-4) 스케일 업 시 관찰 포인트
+
+SF를 10배씩 키우며 아래 지표를 기록하면, 클러스터가 **어느 스케일에서 어떤
+자원을 먼저 고갈**시키는지 식별할 수 있음. 측정 방법은 [docs/03-resource-tuning-plan.md](03-resource-tuning-plan.md)
+0단계 베이스라인 측정과 동일.
+
+| SF | 기대 동작 | 주로 부각되는 한계 | 조치 힌트 |
+|---|---|---|---|
+| sf1    | 수 초 내 완료 | 거의 없음 | 기준선 |
+| sf10   | 수십 초, 단일 stage가 대부분 | 워커 1대 메모리 / GC | JVM heap, GC 알고리즘 |
+| sf100  | 분 단위, shuffle이 수GB | 네트워크, exchange spill | `exchange.compression`, worker 수, `query.max-memory-per-node` |
+| sf300  | 수 분~10분+ | broadcast join 임계 / 파티션 수 | broadcast→partitioned 전환, `join-distribution-type` |
+| sf1000 | 10분+ 또는 OOM | 전체 cluster memory, spill-to-disk | `spill-enabled=true`, spill 경로 디스크, worker scale-out |
+
+**매 SF에서 기록할 값** (Web UI `Query details` 또는 `/v1/query/<id>` API):
+
+- Wall-clock latency (3회 중앙값)
+- Peak user memory / total memory (전체 쿼리 및 stage 최대값)
+- Cumulative input rows / bytes per stage
+- Exchange bytes (shuffle 비용의 지표)
+- Spilled bytes (0 이 아니면 메모리가 부족해 디스크로 떨어진 것)
+- GC pause 합계 (JMX `jvm_gc_collection_seconds_sum` 차분)
+
+### 6-5) 실행 시 주의
+
+- **coordinator 타임아웃**: `kubectl exec` 기본 타임아웃은 없지만, ingress/LB를
+  경유해 Web UI로 제출할 때는 SF1000 쿼리가 수십 분 걸릴 수 있으므로 nginx
+  `proxy-read-timeout`을 넉넉히 설정. CLI 직접 실행(`tq`)이 가장 안전.
+- **OOM으로 인한 worker 재시작**: SF300 이상에서 tuning 없이 돌리면 worker가
+  `OutOfMemoryError`로 kill 되고 helm이 재기동시킴. 반드시 `spill-enabled=true`
+  또는 `query.max-memory`, `query.max-memory-per-node`를 먼저 낮춰 **쿼리가 죽는
+  게 클러스터가 죽는 것보다 먼저** 되도록 설정.
+- **`tpch` 커넥터 특성**: 데이터가 on-the-fly 생성이라 같은 SF1000 쿼리를 두 번
+  돌려도 OS page cache 효과가 없음 → 반복 실행 결과가 비교적 안정적.
+- **부하가 다른 워크로드에 영향**: 같은 namespace 안에 Prometheus/Grafana가 함께
+  떠 있으므로, SF1000 벤치마크 중에는 모니터링 쿼리도 느려질 수 있음. 측정 창구는
+  벤치마크 시작 전 스냅샷과 종료 후 스냅샷의 차분으로 잡을 것.
+
 ## 정리 (Clean-up)
 
 ```bash

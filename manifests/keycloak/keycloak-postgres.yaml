@@ -1,0 +1,73 @@
+# Keycloak Backend PostgreSQL (CloudNativePG)
+#
+# 사전 요구:
+#   1) CNPG operator 설치
+#      kubectl apply --server-side -f \
+#        https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-1.24.1.yaml
+#
+# CNPG가 자동 생성하는 서비스:
+#   - keycloak-postgres-rw  : primary (read/write)  ← Keycloak이 이 호스트로 접속
+#   - keycloak-postgres-ro  : replica (read-only)
+#   - keycloak-postgres-r   : 모든 인스턴스
+#
+# 구성:
+#   - POC: 1 인스턴스, 백업 없음. 운영 전환 시 instances>=3 + backup 추가.
+#   - Keycloak DB 스키마는 Keycloak이 최초 기동 시 자동 생성 (bootstrap 불필요)
+
+# --- App user secret --------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-postgres-app
+  labels:
+    cnpg.io/cluster: keycloak-postgres
+    cnpg.io/reload: "true"
+type: kubernetes.io/basic-auth
+stringData:
+  username: keycloak
+  password: changeme-keycloak-pg       # 운영 시 반드시 변경
+---
+# --- CNPG Cluster -----------------------------------------------------------
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: keycloak-postgres
+spec:
+  instances: 1                          # POC: 1 인스턴스. 운영 시 3으로 증설
+
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.4
+
+  # CNPG가 생성하는 PG pod에 동일 annotation 전파
+  # → Istio sidecar 주입 비활성화 (데이터 인프라 일괄 정책)
+  inheritedMetadata:
+    annotations:
+      sidecar.istio.io/inject: "false"
+
+  bootstrap:
+    initdb:
+      database: keycloak
+      owner: keycloak
+      secret:
+        name: keycloak-postgres-app
+
+  storage:
+    size: 10Gi
+    storageClass: qks-ceph-block
+
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+
+  postgresql:
+    parameters:
+      max_connections: "100"
+      shared_buffers: "128MB"
+      work_mem: "4MB"
+
+  # Prometheus Operator 미설치 환경 → PodMonitor 비활성화
+  monitoring:
+    enablePodMonitor: false

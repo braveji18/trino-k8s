@@ -219,6 +219,7 @@ echo "baseline start: $START_TS"
 
 for i in 1 2 3; do
   echo "=== Q3 run $i ==="
+  start=$(date +%s)
   time tq "
     SELECT l.returnflag, sum(l.extendedprice*(1-l.discount))
     FROM tpch.sf1.lineitem l
@@ -226,6 +227,9 @@ for i in 1 2 3; do
     WHERE o.orderdate < DATE '1995-01-01'
     GROUP BY l.returnflag
   "
+  end=$(date +%s)  
+  diff=$((end - start))
+  echo "running(초): $diff"  
   sleep 5  # 메트릭 scrape 간격(30s) 여유
 done
 
