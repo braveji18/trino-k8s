@@ -1,0 +1,88 @@
+{
+  "cpuQuotaPeriod": "1h",
+  "rootGroups": [
+    {
+      "name": "root",
+      "softMemoryLimit": "100%",
+      "hardConcurrencyLimit": 60,
+      "maxQueued": 150,
+      "schedulingPolicy": "weighted",
+      "subGroups": [
+        {
+          "name": "etl",
+          "softMemoryLimit": "60%",
+          "hardConcurrencyLimit": 5,
+          "maxQueued": 20,
+          "schedulingWeight": 3,
+          "softCpuLimit": "20m",
+          "hardCpuLimit": "30m",
+          "jmxExport": true
+        },
+        {
+          "name": "interactive",
+          "softMemoryLimit": "35%",
+          "hardConcurrencyLimit": 40,
+          "maxQueued": 100,
+          "schedulingPolicy": "weighted",
+          "schedulingWeight": 5,
+          "jmxExport": true,
+          "subGroups": [
+            {
+              "name": "analyst",
+              "softMemoryLimit": "50%",
+              "hardConcurrencyLimit": 15,
+              "maxQueued": 30,
+              "schedulingWeight": 2,
+              "jmxExport": true
+            },
+            {
+              "name": "bi",
+              "softMemoryLimit": "60%",
+              "hardConcurrencyLimit": 20,
+              "maxQueued": 50,
+              "schedulingWeight": 5,
+              "jmxExport": true
+            }
+          ]
+        },
+        {
+          "name": "admin",
+          "softMemoryLimit": "20%",
+          "hardConcurrencyLimit": 10,
+          "maxQueued": 20,
+          "schedulingWeight": 4,
+          "jmxExport": true
+        },
+        {
+          "name": "default",
+          "softMemoryLimit": "5%",
+          "hardConcurrencyLimit": 2,
+          "maxQueued": 5,
+          "schedulingWeight": 1,
+          "jmxExport": true
+        }
+      ]
+    }
+  ],
+  "selectors": [
+    {
+      "group": "root.admin",
+      "user": "admin.*"
+    },
+    {
+      "group": "root.etl",
+      "user": "etl_.*"
+    },
+    {
+      "group": "root.interactive.bi",
+      "user": "bi_.*"
+    },
+    {
+      "group": "root.interactive.analyst",
+      "user": "analyst.*"
+    },
+    {
+      "group": "root.default"
+    }
+  ]
+}

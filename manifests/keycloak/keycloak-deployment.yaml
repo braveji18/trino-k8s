@@ -1,0 +1,132 @@
+# Keycloak 26.x — production mode, external DB (CNPG)
+#
+# 사전 요구:
+#   1) keycloak-postgres CNPG Cluster가 healthy 상태
+#      kubectl -n <ns> get cluster.postgresql.cnpg.io keycloak-postgres
+#   2) keycloak-postgres-app Secret 존재 (keycloak-postgres.yaml에서 생성)
+#
+# CNPG가 자동 생성한 서비스:
+#   keycloak-postgres-rw:5432  ← Keycloak이 접속하는 primary endpoint
+#
+# 외부 접근:
+#   keycloak-ingress.yaml로 Ingress 생성 후
+#   https://braveji-keycloak.trino.quantumcns.ai/admin/ 에서 Admin Console 접근
+
+# --- Admin credential -------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-admin
+type: Opaque
+stringData:
+  KC_BOOTSTRAP_ADMIN_USERNAME: admin
+  KC_BOOTSTRAP_ADMIN_PASSWORD: changeme-keycloak-admin   # 운영 시 반드시 변경
+---
+# --- Deployment -------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  labels:
+    app: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.0
+          args: ["start"]
+          env:
+            # 관리자 계정 (26.x부터 KC_BOOTSTRAP_ADMIN_* 사용)
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin
+                  key: KC_BOOTSTRAP_ADMIN_USERNAME
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin
+                  key: KC_BOOTSTRAP_ADMIN_PASSWORD
+            # DB 연결 — CNPG 자동 생성 서비스 (keycloak-postgres-rw)
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: jdbc:postgresql://keycloak-postgres-rw:5432/keycloak
+            - name: KC_DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-postgres-app
+                  key: username
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-postgres-app
+                  key: password
+            # 프록시 설정 — nginx-ingress 뒤에서 동작
+            # 없으면 리다이렉트 URL이 HTTP로 생성되어 mixed content 에러 발생
+            # (Trino의 G3 함정과 동일 원인)
+            - name: KC_PROXY_HEADERS
+              value: xforwarded
+            # KC_HOSTNAME을 외부 URL로 고정 — 내부/외부 어디서 접근해도
+            # 동일한 issuer(https://braveji-keycloak.trino.quantumcns.ai/realms/trino)를 반환.
+            # KC_HOSTNAME_STRICT=false + KC_HOSTNAME 미설정 방식은 Trino Java HTTP client가
+            # OIDC discovery 시 내부 issuer를 받아 JWT issuer 불일치를 일으키므로 사용 불가 (G21).
+            - name: KC_HOSTNAME
+              value: "https://braveji-keycloak.trino.quantumcns.ai"
+            - name: KC_HTTP_ENABLED
+              value: "true"
+            # Health check 활성화
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_METRICS_ENABLED
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: health
+              containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 9000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+---
+# --- Service ----------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  labels:
+    app: keycloak
+spec:
+  type: ClusterIP
+  selector:
+    app: keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

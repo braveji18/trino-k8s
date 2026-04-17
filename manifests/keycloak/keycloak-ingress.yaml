@@ -1,0 +1,32 @@
+# Keycloak 외부 노출
+# *.quantumcns.ai 와일드카드 인증서 매칭을 위해 단일 레벨 서브도메인 사용
+# (*.trino.quantumcns.ai 는 sub-sub-domain이라 와일드카드 매치 실패)
+#
+# 접근: https://braveji-keycloak.trino.quantumcns.ai/
+# Admin Console: https://braveji-keycloak.trino.quantumcns.ai/admin/
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: braveji-keycloak
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    # Keycloak은 큰 헤더(JWT 토큰)를 주고받으므로 버퍼 확대
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
+    nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: braveji-keycloak.trino.quantumcns.ai
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: keycloak
+                port:
+                  number: 8080

@@ -183,3 +183,7 @@ kubectl -n $NS port-forward $POD 5556:5556 &
 sleep 2 && curl -s http://localhost:5556/metrics | head -30
 kill %1
 
+
+
+  kubectl -n $NS exec -it deploy/${RELEASE_NAME}-trino-coordinator -- \
+    trino --execute 'SHOW SCHEMAS FROM tpch; '

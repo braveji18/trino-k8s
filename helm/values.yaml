@@ -28,12 +28,15 @@ server:
   log:
     trino:
       level: INFO
+  additionalLogProperties:
+    io.trino.server.security.oauth2: DEBUG
   config:
     # HTTPS는 외부 LB에서 termination → qks-ingress → Trino(HTTP)
     # Coordinator 자체는 HTTP로 두고 internal communication shared secret 사용.
     https:
       enabled: false
-    authenticationType: ""
+    # 3단계: Keycloak OAuth2/OIDC 인증
+    authenticationType: "OAUTH2"
     # 프록시 뒤에 있으므로 X-Forwarded-* 헤더 허용.
     # 이게 없으면 nginx-ingress의 X-Forwarded-For로 인해 Trino가 406 반환.
     http:
@@ -41,11 +44,36 @@ server:
   exchangeManager:
     name: "filesystem"
     baseDir: "/data/trino/exchange"
+  # 3단계: OAuth2 세부 설정 — coordinator 전용 (worker에 들어가면 startup 실패)
+  #
+  # issuer 전략 (G21):
+  #   KC_HOSTNAME=https://braveji-keycloak.trino.quantumcns.ai 설정으로 Keycloak이
+  #   내부/외부 어디서든 동일한 외부 issuer를 반환.
+  #   OIDC discovery 비활성화 — *.quantumcns.ai 와일드카드 인증서가
+  #   sub-sub-domain(*.trino.quantumcns.ai)과 매치되지 않아 Java TLS hostname
+  #   검증 실패. discovery를 끄고 모든 endpoint를 수동 지정.
+  #   auth-url만 외부 HTTPS (브라우저 리다이렉트용), 나머지는 내부 HTTP (서버간 통신).
+  coordinatorExtraConfig: |
+    http-server.authentication.oauth2.issuer=https://braveji-keycloak.trino.quantumcns.ai/realms/trino
+    http-server.authentication.oauth2.oidc.discovery=false
+    http-server.authentication.oauth2.client-id=trino
+    http-server.authentication.oauth2.client-secret=${ENV:OAUTH2_CLIENT_SECRET}
+    http-server.authentication.oauth2.scopes=openid,profile
+    http-server.authentication.oauth2.principal-field=preferred_username
+    http-server.authentication.oauth2.auth-url=https://braveji-keycloak.trino.quantumcns.ai/realms/trino/protocol/openid-connect/auth
+    http-server.authentication.oauth2.token-url=http://keycloak:8080/realms/trino/protocol/openid-connect/token
+    http-server.authentication.oauth2.jwks-url=http://keycloak:8080/realms/trino/protocol/openid-connect/certs
+    http-server.authentication.oauth2.userinfo-url=http://keycloak:8080/realms/trino/protocol/openid-connect/userinfo
+    web-ui.enabled=true
+    web-ui.authentication.type=OAUTH2
+    http-server.authentication.allow-insecure-over-http=true
 
 # chart가 위 server.config.http.processForwarded 키를 무시하는 경우의 안전장치
 # (두 방식 중 어느 하나라도 config.properties에 들어가면 됨)
 additionalConfigProperties:
   - http-server.process-forwarded=true
+  # 인증 활성화 시 coordinator↔worker 간 내부 통신에 shared secret 필수
+  - internal-communication.shared-secret=+i5HUMAr++000b1RJWQTO1oFr64XGJk8PIfO7Th7IXQ=
   # chart가 coordinator.config.query.maxMemory를 무시하므로 여기서 강제 주입
   - query.max-memory=88GB
   # tune-5: spill 활성화
@@ -54,6 +82,92 @@ additionalConfigProperties:
   - spiller-max-used-space-threshold=0.8
   - max-spill-per-node=100GB
   - query-max-spill-per-node=50GB
+
+# 3단계: OAuth2 client secret 환경변수 주입 (coordinator + worker 모두에 적용)
+envFrom:
+  - secretRef:
+      name: trino-oauth2
+
+# 3단계: Resource Groups — 팀/사용자별 리소스 격리 (§2)
+# chart가 resource-groups.properties + resource-groups.json을 자동 생성하고
+# coordinator에만 마운트. 별도 ConfigMap/Volume 설정 불필요.
+resourceGroups:
+  type: configmap
+  resourceGroupsConfig: |-
+    {
+      "cpuQuotaPeriod": "1h",
+      "rootGroups": [
+        {
+          "name": "root",
+          "softMemoryLimit": "100%",
+          "hardConcurrencyLimit": 60,
+          "maxQueued": 150,
+          "schedulingPolicy": "weighted",
+          "subGroups": [
+            {
+              "name": "etl",
+              "softMemoryLimit": "60%",
+              "hardConcurrencyLimit": 5,
+              "maxQueued": 20,
+              "schedulingWeight": 3,
+              "softCpuLimit": "20m",
+              "hardCpuLimit": "30m",
+              "jmxExport": true
+            },
+            {
+              "name": "interactive",
+              "softMemoryLimit": "35%",
+              "hardConcurrencyLimit": 40,
+              "maxQueued": 100,
+              "schedulingPolicy": "weighted",
+              "schedulingWeight": 5,
+              "jmxExport": true,
+              "subGroups": [
+                {
+                  "name": "analyst",
+                  "softMemoryLimit": "50%",
+                  "hardConcurrencyLimit": 15,
+                  "maxQueued": 30,
+                  "schedulingWeight": 2,
+                  "jmxExport": true
+                },
+                {
+                  "name": "bi",
+                  "softMemoryLimit": "60%",
+                  "hardConcurrencyLimit": 20,
+                  "maxQueued": 50,
+                  "schedulingWeight": 5,
+                  "jmxExport": true
+                }
+              ]
+            },
+            {
+              "name": "admin",
+              "softMemoryLimit": "20%",
+              "hardConcurrencyLimit": 10,
+              "maxQueued": 20,
+              "schedulingWeight": 4,
+              "jmxExport": true
+            },
+            {
+              "name": "default",
+              "softMemoryLimit": "5%",
+              "hardConcurrencyLimit": 2,
+              "maxQueued": 5,
+              "schedulingWeight": 1,
+              "jmxExport": true
+            }
+          ]
+        }
+      ],
+      "selectors": [
+        { "group": "root.admin", "user": "admin.*" },
+        { "group": "root.etl", "user": "etl_.*" },
+        { "group": "root.interactive.bi", "user": "bi_.*" },
+        { "group": "root.interactive.analyst", "user": "analyst.*" },
+        { "group": "root.default" }
+      ]
+    }
 
 commonLabels: {}
 
