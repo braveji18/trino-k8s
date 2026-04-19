@@ -1,0 +1,173 @@
+# Ranger Admin 2.8.0 — Deployment + Service
+# apache/ranger:2.8.0 공식 이미지 사용 (Docker Hub 직접 pull).
+# DB: CNPG ranger-postgres, 감사: Log4J (Solr 없음), 인증: NONE (자체 DB)
+#
+# entrypoint (ranger.sh) 동작:
+#   1. install.properties를 읽고 setup.sh 실행 (DB 스키마 초기화, 최초 1회)
+#   2. ranger-admin-services.sh start (Tomcat 기동)
+#   3. create-ranger-services.py 실행 (서비스 자동 등록, 최초 1회)
+#
+# install.properties는 ConfigMap으로 마운트하여 DB 연결 정보를 주입.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ranger-admin-config
+data:
+  install.properties: |
+    PYTHON_COMMAND_INVOKER=python3
+    JAVA_BIN=java
+    JAVA_VERSION_REQUIRED=1.8
+
+    DB_FLAVOR=POSTGRES
+    SQL_CONNECTOR_JAR=/usr/share/java/postgresql.jar
+    db_root_user=ranger
+    db_root_password=changeme-ranger-pg
+    db_host=ranger-postgres-rw:5432
+    db_ssl_enabled=false
+    db_ssl_required=false
+    db_ssl_verifyServerCertificate=false
+    db_ssl_auth_type=2-way
+    db_ssl_certificate_file=
+    db_name=ranger
+    db_user=ranger
+    db_password=changeme-ranger-pg
+    is_override_db_connection_string=false
+    db_override_connection_string=
+
+    rangerAdmin_password=Admin1234!
+    rangerTagsync_password=Tagsync1234!
+    rangerUsersync_password=Usersync1234!
+    keyadmin_password=Keyadmin1234!
+
+    audit_store=log4j
+
+    policymgr_external_url=http://ranger-admin:6080
+    policymgr_http_enabled=true
+    policymgr_https_keystore_file=
+    policymgr_https_keystore_keyalias=rangeradmin
+    policymgr_https_keystore_password=
+    policymgr_supportedcomponents=
+
+    authentication_method=NONE
+    remoteLoginEnabled=true
+    authServiceHostName=localhost
+    authServicePort=5151
+
+    token_valid=30
+    cookie_domain=
+    cookie_path=/
+    admin_principal=
+    admin_keytab=
+    lookup_principal=
+    lookup_keytab=
+    spnego_principal=
+    spnego_keytab=
+
+    ranger_unixauth_keystore=keystore.jks
+    ranger_unixauth_keystore_password=password
+    ranger_unixauth_truststore=cacerts
+    ranger_unixauth_truststore_password=changeit
+
+    unix_user=ranger
+    unix_user_pwd=ranger
+    unix_group=ranger
+
+    hadoop_conf=
+    sso_enabled=false
+    sso_providerurl=
+    sso_publickey=
+
+    RANGER_PID_DIR_PATH=/var/run/ranger
+    RANGER_ADMIN_LOG_DIR=/var/log/ranger
+    RANGER_ADMIN_LOGBACK_CONF_FILE=
+    XAPOLICYMGR_DIR=$PWD
+    app_home=$PWD/ews/webapp
+    TMPFILE=$PWD/.fi_tmp
+    LOGFILE=$PWD/logfile
+    LOGFILES=$PWD/logfile
+
+    ranger_admin_max_heap_size=1g
+    PATCH_RETRY_INTERVAL=120
+    STALE_PATCH_ENTRY_HOLD_TIME=10
+
+    mysql_core_file=db/mysql/optimized/current/ranger_core_db_mysql.sql
+    mysql_audit_file=db/mysql/xa_audit_db.sql
+    oracle_core_file=db/oracle/optimized/current/ranger_core_db_oracle.sql
+    oracle_audit_file=db/oracle/xa_audit_db_oracle.sql
+    postgres_core_file=db/postgres/optimized/current/ranger_core_db_postgres.sql
+    postgres_audit_file=db/postgres/xa_audit_db_postgres.sql
+    sqlserver_core_file=db/sqlserver/optimized/current/ranger_core_db_sqlserver.sql
+    sqlserver_audit_file=db/sqlserver/xa_audit_db_sqlserver.sql
+    sqlanywhere_core_file=db/sqlanywhere/optimized/current/ranger_core_db_sqlanywhere.sql
+    sqlanywhere_audit_file=db/sqlanywhere/xa_audit_db_sqlanywhere.sql
+    cred_keystore_filename=$PWD/ews/webapp/WEB-INF/classes/conf/.jceks/rangeradmin.jceks
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ranger-admin
+  labels:
+    app: ranger-admin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ranger-admin
+  template:
+    metadata:
+      labels:
+        app: ranger-admin
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+        - name: ranger-admin
+          image: apache/ranger:2.8.0
+          ports:
+            - name: http
+              containerPort: 6080
+          volumeMounts:
+            - name: ranger-config
+              mountPath: /opt/ranger/admin/install.properties
+              subPath: install.properties
+          readinessProbe:
+            httpGet:
+              path: /login.jsp
+              port: 6080
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /login.jsp
+              port: 6080
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+      volumes:
+        - name: ranger-config
+          configMap:
+            name: ranger-admin-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ranger-admin
+  labels:
+    app: ranger-admin
+spec:
+  type: ClusterIP
+  selector:
+    app: ranger-admin
+  ports:
+    - name: http
+      port: 6080
+      targetPort: 6080

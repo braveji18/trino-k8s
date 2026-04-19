@@ -1,0 +1,52 @@
+# K8s ResourceQuota + LimitRange — Namespace 레벨 리소스 경계
+# 의도치 않은 워커 무한 증식, 리소스 누수를 방지.
+#
+# 현재 리소스 합산 (2026-04-19 기준):
+#   requests.cpu  ~54   limits.cpu  ~94
+#   requests.mem  ~236Gi  limits.mem  ~284Gi
+#   pods: 14  pvcs: 8  services: 16
+#
+# 적용: kubectl -n user-braveji apply -f manifests/trino/resource-quota.yaml
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: trino-resource-quota
+  namespace: user-braveji
+spec:
+  hard:
+    # 현재 합계 + 롤링 업데이트 여유(워커 1대) + HPA 여유(워커 1대 추가)
+    requests.cpu: "80"
+    limits.cpu: "120"
+    requests.memory: "320Gi"
+    limits.memory: "440Gi"
+    # Pod 수 제한 — 현재 14 + 롤링업데이트 4 + ephemeral 토큰 pod 12 = 30
+    pods: "30"
+    # PVC 수 제한 — 현재 8 + 여유
+    persistentvolumeclaims: "20"
+    # Service 수 제한 — 현재 16 + 여유
+    services: "25"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: trino-limit-range
+  namespace: user-braveji
+spec:
+  limits:
+    # request/limit이 없는 컨테이너에 기본값 주입 (ephemeral pod 등)
+    - type: Container
+      default:
+        cpu: "2"
+        memory: "4Gi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "256Mi"
+      max:
+        cpu: "32"
+        memory: "96Gi"
+    # Pod 단위 상한 — 단일 Pod가 과도한 리소스 점유 방지
+    - type: Pod
+      max:
+        cpu: "48"
+        memory: "128Gi"

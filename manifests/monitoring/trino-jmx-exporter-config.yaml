@@ -22,7 +22,6 @@ data:
     #   javaagent가 즉시 스크랩을 시작하면 Trino 초기화 중 짧은 pause 발생 가능
     startDelaySeconds: 0
 
-    # 기본은 블랙리스트 없이 모든 MBean 노출, rules로 이름만 깔끔히 리라벨
     rules:
       # ------------------------------------------------------------------
       # JVM 기본 메트릭 (jmx_exporter 기본 rule로도 충분하지만 명시)
@@ -80,6 +79,16 @@ data:
       # ------------------------------------------------------------------
       - pattern: 'trino.execution.scheduler<name=SplitSchedulerStats><>(SleepTime|ScheduleSplitTime|GetSplitTime)\.(.+)'
         name: trino_scheduler_$1_$2
+        type: GAUGE
+
+      # ------------------------------------------------------------------
+      # Trino Resource Groups (§6-a: 멀티테넌시 모니터링)
+      # jmxExport: true 설정으로 각 resource group이 MBean으로 노출됨
+      # ------------------------------------------------------------------
+      - pattern: 'trino.execution.resourcegroups<type=InternalResourceGroup, name=(.+)><>(\w+)'
+        name: trino_resourcegroup_$2
+        labels:
+          resource_group: "$1"
         type: GAUGE
 
       # ------------------------------------------------------------------

@@ -1,0 +1,24 @@
+# Ranger Admin Ingress — 외부 접근용
+# Keycloak Ingress와 동일한 패턴.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ranger-admin
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: braveji-ranger.trino.quantumcns.ai
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ranger-admin
+                port:
+                  number: 6080

@@ -45,16 +45,35 @@ kubectl -n "$NS" rollout status deployment/keycloak --timeout=300s
 echo "==> 3) Keycloak Ingress"
 kubectl apply -n "$NS" -f "$ROOT/manifests/keycloak/keycloak-ingress.yaml"
 
-# ── 4. Ranger (향후 추가) ──────────────────────────────────────────
-# TODO: Ranger Admin 배포 + Trino Plugin 설치
-# echo "==> 4) Ranger Admin"
-# kubectl apply -n "$NS" -f "$ROOT/manifests/ranger/ranger-admin.yaml"
+# ── 4. Ranger PostgreSQL (CNPG) ───────────────────────────────────
+echo "==> 4) Ranger PostgreSQL (CloudNativePG)"
+kubectl apply -n "$NS" -f "$ROOT/manifests/ranger/ranger-postgres.yaml"
+echo "    ranger-postgres CNPG 클러스터 Ready 대기..."
+# CNPG CRD의 condition 이름이 다를 수 있으므로 polling으로 대기
+for i in $(seq 1 30); do
+  READY=$(kubectl -n "$NS" get cluster.postgresql.cnpg.io ranger-postgres \
+    -o jsonpath='{.status.readyInstances}' 2>/dev/null || echo "")
+  if [ "$READY" = "1" ]; then
+    echo "    ranger-postgres Ready"
+    break
+  fi
+  sleep 10
+done
+
+# ── 5. Ranger Admin Deployment + Service + Ingress ────────────────
+echo "==> 5) Ranger Admin Deployment + Service"
+kubectl apply -n "$NS" -f "$ROOT/manifests/ranger/ranger-admin-deployment.yaml"
+echo "==> 5b) Ranger Admin Ingress"
+kubectl apply -n "$NS" -f "$ROOT/manifests/ranger/ranger-admin-ingress.yaml"
+echo "    Ranger Admin Pod Ready 대기 (setup.sh + Tomcat ~2분)..."
+kubectl -n "$NS" rollout status deployment/ranger-admin --timeout=300s || true
 
 echo ""
 echo "==> Done."
 echo "    Keycloak Admin Console: https://braveji-keycloak.trino.quantumcns.ai/admin/"
+echo "    Ranger  Admin Console: https://braveji-ranger.trino.quantumcns.ai/"
 echo ""
 echo "다음 단계:"
-echo "  1) 브라우저에서 Keycloak Admin Console 접속 → Realm/Client/그룹 설정 (1-1)"
-echo "  2) Trino OAuth2 연동 — helm/values.yaml 수정 후 install.sh 재실행 (1-2)"
-echo "  3) Ranger 연동 (4단계)"
+echo "  1) Keycloak Realm/Client/그룹 설정: ./scripts/setup-keycloak-realm.sh"
+echo "  2) Ranger 사용자/그룹/정책 설정: ./scripts/setup-ranger-users.sh"
+echo "  3) Trino OAuth2 + Ranger 연동: helm/values.yaml 수정 후 ./scripts/install.sh"

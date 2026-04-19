@@ -1,0 +1,58 @@
+# Trino Ranger Plugin 설정 — coordinator에 마운트
+# ranger-trino-security.xml: Ranger Admin 연결 정보
+# ranger-trino-audit.xml: 감사 로그 설정 (Log4J, Solr 없음)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-ranger-config
+data:
+  ranger-trino-security.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+      <property>
+        <name>ranger.plugin.trino.policy.rest.url</name>
+        <value>http://ranger-admin:6080</value>
+      </property>
+      <property>
+        <name>ranger.plugin.trino.service.name</name>
+        <value>trino-braveji</value>
+      </property>
+      <property>
+        <name>ranger.plugin.trino.access.cluster.name</name>
+        <value>trino-braveji</value>
+      </property>
+      <property>
+        <name>ranger.plugin.trino.policy.pollIntervalMs</name>
+        <value>30000</value>
+      </property>
+      <property>
+        <name>ranger.plugin.trino.policy.cache.dir</name>
+        <value>/tmp/ranger-trino-policy-cache</value>
+      </property>
+      <property>
+        <name>ranger.plugin.trino.use.rangerGroups</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>ranger.plugin.trino.use.only.rangerGroups</name>
+        <value>true</value>
+      </property>
+    </configuration>
+  ranger-trino-audit.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+      <!-- POC: Log4J 감사 (Solr 없음) -->
+      <property>
+        <name>xasecure.audit.is.enabled</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>xasecure.audit.destination.log4j</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>xasecure.audit.destination.log4j.logger</name>
+        <value>ranger.audit</value>
+      </property>
+    </configuration>

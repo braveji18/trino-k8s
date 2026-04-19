@@ -169,6 +169,17 @@ resourceGroups:
       ]
     }
 
+# 3단계 §4-d: Ranger 접근제어
+# file-based(rules.json)에서 Ranger로 전환 완료.
+# XML 설정 파일은 ConfigMap(trino-ranger-config)으로 coordinator에 마운트.
+# 이전 file-based 설정은 git log 참고 (revision 46까지).
+accessControl:
+  type: properties
+  properties: |
+    access-control.name=ranger
+    ranger.service.name=trino-braveji
+    ranger.plugin.config.resource=/etc/trino/ranger/ranger-trino-security.xml,/etc/trino/ranger/ranger-trino-audit.xml
+
 commonLabels: {}
 
 coordinator:
@@ -186,11 +197,16 @@ coordinator:
     - name: data-trino
       emptyDir:
         sizeLimit: 20Gi
+    - name: ranger-config
+      configMap:
+        name: trino-ranger-config
   additionalVolumeMounts:
     - name: jmx-exporter-config
       mountPath: /etc/jmx-exporter
     - name: data-trino
       mountPath: /data/trino
+    - name: ranger-config
+      mountPath: /etc/trino/ranger
   jvm:
     maxHeapSize: "8G"
     gcMethod:

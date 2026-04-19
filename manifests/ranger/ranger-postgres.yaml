@@ -1,0 +1,45 @@
+# Ranger DB backend — CNPG Cluster
+# 기존 hms-postgres, keycloak-postgres와 동일한 패턴.
+# POC: 1 인스턴스, 백업 없음.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ranger-postgres-app
+  labels:
+    cnpg.io/cluster: ranger-postgres
+type: kubernetes.io/basic-auth
+stringData:
+  username: ranger
+  password: changeme-ranger-pg
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: ranger-postgres
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.4
+
+  inheritedMetadata:
+    annotations:
+      sidecar.istio.io/inject: "false"
+
+  bootstrap:
+    initdb:
+      database: ranger
+      owner: ranger
+      secret:
+        name: ranger-postgres-app
+
+  storage:
+    size: 10Gi
+    storageClass: qks-ceph-block
+
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
