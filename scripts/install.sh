@@ -58,6 +58,10 @@ echo "==> 5) Hive Metastore"
 kubectl apply -n "$NS" -f "$ROOT/manifests/hive-metastore/hive-metastore.yaml"
 kubectl -n "$NS" rollout status deployment/hive-metastore --timeout=600s
 
+##################################################################
+##. 2단계 (모니터링 + 튜닝)과 3단계 (멀티테넌시 — Keycloak + OPA) 설정후에 아래 실행
+##################################################################
+
 echo "==> 6) Trino (Helm)"
 helm repo add my-trino https://trinodb.github.io/charts >/dev/null 2>&1 || true
 helm repo update my-trino

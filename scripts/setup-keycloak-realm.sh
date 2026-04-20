@@ -280,7 +280,17 @@ for entry in "${USERS[@]}"; do
   echo "    ${username} → ${group} 배정 완료"
 done
 
-# ── 7. 결과 요약 ───────────────────────────────────────────────────
+# ── 7. trino-oauth2 K8s Secret 생성 ────────────────────────────────
+# helm/values.yaml의 envFrom이 참조하는 Secret. Client Secret을
+# OAUTH2_CLIENT_SECRET 키로 저장 — install.sh 재실행 시 Trino Pod에 주입됨.
+echo ""
+echo "==> 7) trino-oauth2 K8s Secret 생성/갱신"
+kubectl -n "${NS}" create secret generic trino-oauth2 \
+  --from-literal=OAUTH2_CLIENT_SECRET="${CLIENT_SECRET}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+echo "    완료 — keys: OAUTH2_CLIENT_SECRET"
+
+# ── 8. 결과 요약 ───────────────────────────────────────────────────
 echo ""
 echo "=========================================="
 echo "  Keycloak Realm 설정 완료"
@@ -289,6 +299,7 @@ echo ""
 echo "  Realm           : ${REALM_NAME}"
 echo "  Client ID       : trino"
 echo "  Client Secret   : ${CLIENT_SECRET}"
+echo "  K8s Secret      : ${NS}/trino-oauth2 (OAUTH2_CLIENT_SECRET)"
 echo "  Groups          : trino-etl, trino-analyst, trino-bi, trino-admin"
 echo "  Users           : ${#USERS[@]}명"
 echo "  Default Password: ${DEFAULT_PASSWORD}"
@@ -298,14 +309,9 @@ echo "  OIDC Discovery (내부) : http://keycloak:8080/realms/${REALM_NAME}/.wel
 echo "  Trino issuer 설정    : https://braveji-keycloak.trino.quantumcns.ai/realms/${REALM_NAME}"
 echo ""
 echo "다음 단계:"
-echo "  1) Client Secret을 K8s Secret으로 저장:"
-echo "     kubectl -n ${NS} create secret generic trino-oauth2 \\"
-echo "       --from-literal=OAUTH2_CLIENT_SECRET='${CLIENT_SECRET}' \\"
-echo "       --dry-run=client -o yaml | kubectl apply -f -"
+echo "  1) helm/values.yaml에 OAuth2 설정 적용 후 ./scripts/install.sh 재실행 (§1-2)"
 echo ""
-echo "  2) helm/values.yaml에 OAuth2 설정 추가 후 install.sh 재실행 (§1-2)"
-echo ""
-echo "  3) 토큰 테스트 (KC_HOSTNAME 설정으로 내부/외부 동일 issuer):"
+echo "  2) 토큰 테스트 (KC_HOSTNAME 설정으로 내부/외부 동일 issuer):"
 echo "     TOKEN=\$(kubectl -n ${NS} run kc-tok --rm -i --restart=Never \\"
 echo "       --overrides='{\"metadata\":{\"annotations\":{\"sidecar.istio.io/inject\":\"false\"}}}' \\"
 echo "       --image=curlimages/curl:8.5.0 -- \\"
