@@ -1,0 +1,76 @@
+# OPA (Open Policy Agent) — Trino 접근제어 엔진
+# Rego 정책을 ConfigMap에서 마운트하여 사용. stateless (DB 없음).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa
+  labels:
+    app: opa
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opa
+  template:
+    metadata:
+      labels:
+        app: opa
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+        - name: opa
+          image: openpolicyagent/opa:1.15.2-static
+          args:
+            - "run"
+            - "--server"
+            - "--addr=0.0.0.0:8181"
+            - "--log-level=info"
+            - "--log-format=json"
+            - "--set=decision_logs.console=true"
+            - "/policies/trino.rego"
+          ports:
+            - name: http
+              containerPort: 8181
+          volumeMounts:
+            - name: policies
+              mountPath: /policies
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8181
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8181
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+      volumes:
+        - name: policies
+          configMap:
+            name: trino-opa-policy
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa
+  labels:
+    app: opa
+spec:
+  type: ClusterIP
+  selector:
+    app: opa
+  ports:
+    - name: http
+      port: 8181
+      targetPort: 8181

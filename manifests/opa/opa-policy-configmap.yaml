@@ -1,0 +1,145 @@
+# Trino Rego 정책 — OPA로 마운트
+# 변경 시 ConfigMap 재적용 후 OPA Pod 재시작 또는 reload API 호출.
+#
+# 주의: Trino 480 OAuth2 모듈은 JWT의 groups 클레임을 identity.groups로 자동
+# 추출하지 못함 (groups-field 미지원, file/ldap group provider 마운트는 chart의
+# /etc/trino 디렉터리 마운트와 충돌). 따라서 username→groups 매핑을 본 정책에
+# 정적으로 둠. 신규 사용자 추가 시 user_to_groups 와 Keycloak 둘 다 갱신.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-opa-policy
+  labels:
+    app: opa
+data:
+  trino.rego: |
+    package trino
+
+    import rego.v1
+
+    # 기본은 거부
+    default allow := false
+
+    # ─── username → groups 정적 매핑 ───
+    # Keycloak 사용자/그룹과 일치해야 함 (scripts/setup-keycloak-realm.sh 참고).
+    user_to_groups := {
+        "admin_trino":    {"trino-admin"},
+        "etl_user1":      {"trino-etl"},
+        "etl_user2":      {"trino-etl"},
+        "etl_user3":      {"trino-etl"},
+        "etl_user4":      {"trino-etl"},
+        "etl_user5":      {"trino-etl"},
+        "analyst_user1":  {"trino-analyst"},
+        "analyst_user2":  {"trino-analyst"},
+        "analyst_user3":  {"trino-analyst"},
+        "analyst_user4":  {"trino-analyst"},
+        "analyst_user5":  {"trino-analyst"},
+        "bi_superset":    {"trino-bi"},
+        "bi_redash":      {"trino-bi"},
+    }
+
+    # 사용자 그룹 — 우선 input.context.identity.groups (Trino가 채워주면), 없으면
+    # username → 정적 매핑으로 fallback.
+    user_groups := groups if {
+        input_groups := {g | some g in input.context.identity.groups}
+        count(input_groups) > 0
+        groups := input_groups
+    } else := groups if {
+        groups := user_to_groups[input.context.identity.user]
+    } else := set()
+
+    # ─── 그룹 정의 ───
+    admin_groups := {"trino-admin"}
+    etl_groups := {"trino-etl"}
+    readonly_groups := {"trino-analyst", "trino-bi"}
+
+    # ─── 헬퍼 ───
+    is_admin if {
+        some g in admin_groups
+        g in user_groups
+    }
+    is_etl if {
+        some g in etl_groups
+        g in user_groups
+    }
+    is_readonly if {
+        some g in readonly_groups
+        g in user_groups
+    }
+
+    # ─── 모든 로그인 사용자에게 기본 허용되는 작업 ───
+    base_allowed_ops := {
+        "ExecuteQuery",
+        "AccessCatalog",
+        "ShowCatalogs", "FilterCatalogs",
+        "ShowSchemas", "FilterSchemas",
+        "ShowTables", "FilterTables",
+        "ShowColumns", "FilterColumns",
+        "ShowFunctions",
+        "ReadSystemInformation"
+    }
+
+    allow if {
+        input.action.operation in base_allowed_ops
+        count(user_groups) > 0
+    }
+
+    # ─── 정책 1: admin은 모든 작업 허용 ───
+    allow if is_admin
+
+    # ─── 정책 2: etl은 hive/iceberg/postgresql에 대한 모든 작업 ───
+    etl_catalogs := {"hive", "iceberg", "postgresql", "system", "tpch", "tpcds", "jmx", "memory"}
+
+    allow if {
+        is_etl
+        input.action.resource.table.catalogName in etl_catalogs
+    }
+    allow if {
+        is_etl
+        input.action.resource.schema.catalogName in etl_catalogs
+    }
+    allow if {
+        is_etl
+        input.action.resource.catalog.name in etl_catalogs
+    }
+    allow if {
+        is_etl
+        not input.action.resource.table
+        not input.action.resource.schema
+        not input.action.resource.catalog
+    }
+
+    # ─── 정책 3: analyst/bi는 read-only ───
+    read_only_ops := {
+        "SelectFromColumns",
+        "ShowSchemas", "ShowTables", "ShowColumns", "ShowCatalogs",
+        "ShowCreateTable", "ShowCreateSchema",
+        "FilterCatalogs", "FilterSchemas", "FilterTables", "FilterColumns",
+        "ExecuteQuery", "AccessCatalog", "ReadSystemInformation",
+        "ShowFunctions", "ExecuteFunction"
+    }
+
+    allow if {
+        is_readonly
+        input.action.operation in read_only_ops
+    }
+
+    # ─── 정책 4: 모든 사용자는 자기 자신을 impersonate 가능 ───
+    allow if {
+        input.action.operation == "ImpersonateUser"
+        input.action.resource.user.user == input.context.identity.user
+    }
+
+    # ─── 정책 5: 민감 schema 차단 (analyst/bi) ───
+    allow := false if {
+        is_readonly
+        input.action.resource.table.catalogName == "postgresql"
+        input.action.resource.table.schemaName in {"internal", "hr_payroll"}
+    }
+
+    # ─── 정책 6: queryId 자기 쿼리 관리 ───
+    allow if {
+        input.action.operation in {"ViewQueryOwnedBy", "KillQueryOwnedBy"}
+        input.action.resource.user.user == input.context.identity.user
+    }

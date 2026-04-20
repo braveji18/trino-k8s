@@ -1,0 +1,21 @@
+# Trino File Group Provider — username → groups 매핑
+# Trino OAuth2 모듈이 JWT의 groups 클레임을 자동 추출하지 못하므로 (Trino 480 OAuth2는
+# groups-field 미지원), 같은 매핑을 파일 group provider에 정적으로 작성.
+# Keycloak 사용자 추가 시 groups.txt도 같이 갱신해야 함.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-group-provider
+  labels:
+    app: trino
+data:
+  group-provider.properties: |
+    group-provider.name=file
+    file.group-file=/etc/trino/group-provider/groups.txt
+    file.refresh-period=30s
+  groups.txt: |
+    trino-admin:admin_trino
+    trino-etl:etl_user1,etl_user2,etl_user3,etl_user4,etl_user5
+    trino-analyst:analyst_user1,analyst_user2,analyst_user3,analyst_user4,analyst_user5
+    trino-bi:bi_superset,bi_redash
