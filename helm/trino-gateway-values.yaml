@@ -1,0 +1,90 @@
+# Trino Gateway Helm values (chart: my-trino/trino-gateway 1.18.0)
+# 적용:
+#   helm upgrade --install trino-gateway my-trino/trino-gateway -n user-braveji \
+#     -f helm/trino-gateway-values.yaml \
+#     --set "config.dataStore.password=$(kubectl -n user-braveji get secret \
+#         gateway-postgres-app -o jsonpath='{.data.password}' | base64 -d)"
+
+replicaCount: 1                       # POC: 1. 운영 시 2 이상
+
+image:
+  repository: trinodb/trino-gateway
+  tag: "18"
+
+# 이 클러스터는 Istio sidecar 자동 주입이 켜져 있고 namespace AuthorizationPolicy가
+# 외부 ingress를 막음. 데이터 인프라 일괄 정책에 따라 sidecar를 끔
+# (다른 컴포넌트: keycloak, CNPG도 동일).
+podAnnotations:
+  sidecar.istio.io/inject: "false"
+
+config:
+  serverConfig:
+    node.environment: prod
+    http-server.http.port: 8080
+    http-server.http.enabled: true
+    http-server.process-forwarded: true   # ingress 종단이라 필수
+  dataStore:
+    jdbcUrl: jdbc:postgresql://gateway-postgres-rw.user-braveji.svc:5432/gateway
+    user: gateway
+    password: ""    # 설치 시 --set으로 주입 (CNPG secret에서 읽어옴)
+    driver: org.postgresql.Driver
+  clusterStatsConfiguration:
+    monitorType: INFO_API
+
+  # 폼 인증 + admin 프리셋 사용자 (POC). 운영 시 OAuth/LDAP로 교체.
+  # ADMIN_USER 권한은 admin/user/api 모든 role 매칭.
+  presetUsers:
+    admin:
+      password: ""    # 설치 시 --set으로 주입
+      privileges: ADMIN_USER
+  authentication:
+    defaultType: form
+    form:
+      selfSignKeyPair:
+        privateKeyRsa: /etc/trino-gateway/auth/privateKey.pem
+        publicKeyRsa: /etc/trino-gateway/auth/publicKey.pem
+  authorization:
+    admin: (.*)ADMIN(.*)
+    user: (.*)USER(.*)
+    api: (.*)API(.*)
+
+# RSA 키쌍 Secret을 컨테이너에 마운트
+volumes:
+  - name: gateway-auth
+    secret:
+      secretName: trino-gateway-auth
+volumeMounts:
+  - name: gateway-auth
+    mountPath: /etc/trino-gateway/auth
+    readOnly: true
+
+service:
+  type: ClusterIP
+  ports:
+    - protocol: TCP
+      name: gateway
+
+serviceName: trino-gateway
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+  hosts:
+    - host: braveji-gw.trino.quantumcns.ai
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []           # 자체서명 ingress: tls 비활성. 필요 시 cert-manager 연동 추가
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+podDisruptionBudget:
+  minAvailable: 0   # replicaCount=1이므로 PDB 비활성화 (drain 방해 방지)

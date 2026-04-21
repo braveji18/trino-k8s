@@ -1,0 +1,68 @@
+# Trino Gateway Backend PostgreSQL (CloudNativePG)
+#
+# Gateway가 백엔드 클러스터 목록, 라우팅 규칙, query history를 저장하는 메타DB.
+# 사전 요구: CNPG operator 설치 (manifests/postgres/hms-postgres.yaml 참고)
+#
+# CNPG가 자동 생성하는 서비스:
+#   - gateway-postgres-rw  : primary (read/write)  ← Trino Gateway가 이 호스트로 접속
+#   - gateway-postgres-ro  : replica (read-only)
+#   - gateway-postgres-r   : 모든 인스턴스
+#
+# 구성:
+#   - POC: 1 인스턴스, 백업 없음. 운영 전환 시 instances>=3 + backup 추가.
+#   - Gateway 스키마는 Trino Gateway가 최초 기동 시 Flyway로 자동 생성 (bootstrap 불필요)
+
+# --- App user secret --------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-postgres-app
+  labels:
+    cnpg.io/cluster: gateway-postgres
+    cnpg.io/reload: "true"
+type: kubernetes.io/basic-auth
+stringData:
+  username: gateway
+  password: 70CafDjgG7yD2slZUehJOdE5    # 운영 시 반드시 변경
+---
+# --- CNPG Cluster -----------------------------------------------------------
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: gateway-postgres
+spec:
+  instances: 1
+
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.4
+
+  inheritedMetadata:
+    annotations:
+      sidecar.istio.io/inject: "false"
+
+  bootstrap:
+    initdb:
+      database: gateway
+      owner: gateway
+      secret:
+        name: gateway-postgres-app
+
+  storage:
+    size: 5Gi
+    storageClass: qks-ceph-block
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+  postgresql:
+    parameters:
+      max_connections: "100"
+      shared_buffers: "64MB"
+      work_mem: "4MB"
+
+  monitoring:
+    enablePodMonitor: false
