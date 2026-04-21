@@ -1,0 +1,96 @@
+# ===== Environment & Secrets =====
+.env
+.env.*
+!.env.example
+
+# ===== Gradle =====
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# ===== Maven (fallback) =====
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+
+# ===== IDE - IntelliJ =====
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# ===== IDE - Eclipse / STS =====
+.classpath
+.project
+.settings/
+.factorypath
+bin/
+
+# ===== IDE - VSCode =====
+.vscode/
+*.code-workspace
+
+# ===== Java =====
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
+
+# ===== Spring Boot =====
+application-local.yml
+application-local.properties
+
+# ===== Logs =====
+logs/
+*.log
+spring.log
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+
+# ===== Docker =====
+docker-compose.override.yml
+
+# ===== Test & Coverage =====
+test-output/
+coverage/
+jacoco/
+*.exec
+.vite/
+
+# ===== Temporary & Upload =====
+tmp/
+temp/
+upload/
+uploads/
+.DS_Store
+
+# ===== Node.js =====
+node_modules/
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# ===== Playwright =====
+playwright-report/
+test-results/
+
+# ===== Claude Code =====
+.claude/worktrees
+.prompt/
