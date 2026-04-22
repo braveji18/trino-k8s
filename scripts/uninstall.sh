@@ -195,10 +195,15 @@ if [[ -z "$KEEP_PVC" ]]; then
 fi
 
 # ── 11) Harbor imagePullSecret ───────────────────────────────────────
-if [[ -z "$KEEP_HARBOR_SECRET" ]]; then
-  section "11) Harbor imagePullSecret ($HARBOR_SECRET)"
-  run kubectl -n "$NS" delete secret "$HARBOR_SECRET" --ignore-not-found
-fi
+#if [[ -z "$KEEP_HARBOR_SECRET" ]]; then
+#  section "11) Harbor imagePullSecret ($HARBOR_SECRET)"
+#  run kubectl -n "$NS" delete secret "$HARBOR_SECRET" --ignore-not-found
+#fi
+
+# trino-gateway 삭제
+helm unistall -n"$NS"  trino-gateway
+kubectl  delete  -n"$NS" -f "$ROOT/manifests/trino-gateway/gateway-postgres.yaml"
+
 
 # ── 12) 잔여 PVC 정리 (helm uninstall은 PVC를 남김) ──────────────────
 if [[ -z "$KEEP_PVC" ]]; then

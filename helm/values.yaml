@@ -249,7 +249,7 @@ worker:
         name: trino-jmx-exporter-config
     - name: data-trino
       emptyDir:
-        sizeLimit: 100Gi
+        sizeLimit: 30Gi
   additionalVolumeMounts:
     - name: jmx-exporter-config
       mountPath: /etc/jmx-exporter
@@ -257,7 +257,7 @@ worker:
       mountPath: /data/trino
   # tune-2 Step 1: qcs05/06에 배치 (128C/258Gi, taint 없음)
   # qcs01-03은 control-plane NoSchedule taint로 사용 불가
-  # anti-affinity는 preferred — 2노드에 3워커이므로 hard로 걸면 1개가 Pending
+  # anti-affinity는 preferred — 작은 워커(4C/20Gi)이므로 동일 노드 다수 배치 허용
   affinity:
     nodeAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
@@ -277,11 +277,11 @@ worker:
                   values: [worker]
             topologyKey: kubernetes.io/hostname
   jvm:
-    maxHeapSize: "64G"
+    maxHeapSize: "16G"
     gcMethod:
       type: "UseG1GC"
       g1:
-        heapRegionSize: "32M"
+        heapRegionSize: "16M"
   additionalJVMConfig:
     - "-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=5556:/etc/jmx-exporter/config.yaml"
     # tune-4: JVM 안정성 + 진단 플래그
@@ -298,16 +298,16 @@ worker:
     - "-Xlog:gc*:file=/tmp/gc.log:time,uptime,level,tags:filecount=5,filesize=100M"
   config:
     memory:
-      heapHeadroomPerNode: "20GB"
+      heapHeadroomPerNode: "4GB"
     query:
-      maxMemoryPerNode: "42GB"
+      maxMemoryPerNode: "10GB"
   resources:
     requests:
-      cpu: "16"
-      memory: "72Gi"
+      cpu: "4"
+      memory: "18Gi"      # 4개 × 18Gi = 72Gi → qcs05 빈 메모리 73Gi에 fit
     limits:
-      cpu: "24"
-      memory: "80Gi"
+      cpu: "4"
+      memory: "20Gi"      # heap 16G + JVM overhead 2~4G headroom
 
 # Catalogs (catalogs/ 디렉토리 내용을 그대로 옮겨 넣음)
 catalogs:

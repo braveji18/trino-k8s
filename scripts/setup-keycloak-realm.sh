@@ -61,8 +61,8 @@ KC_GROUPS=("trino-etl" "trino-analyst" "trino-bi" "trino-admin")
 # 상주 curl Pod — 매번 Pod를 생성/삭제하지 않고 하나의 Pod를 재사용
 CURL_POD="kc-setup-curl"
 
-setup_curl_pod() {
   # 이미 있으면 재사용
+setup_curl_pod() {
   if kubectl -n "$NS" get pod "$CURL_POD" &>/dev/null; then
     return 0
   fi
@@ -135,6 +135,7 @@ REALM_CONFIG="{
   \"ssoSessionMaxLifespan\": 36000
 }"
 
+#  Realm은 수동 생성 필요 
 echo ""
 echo "==> 2) Realm '${REALM_NAME}' 생성"
 EXISTING_REALM=$(kc_api GET "/${REALM_NAME}" 2>/dev/null | grep -o '"realm":"[^"]*"' | cut -d'"' -f4)

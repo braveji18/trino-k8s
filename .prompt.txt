@@ -187,3 +187,9 @@ kill %1
 
   kubectl -n $NS exec -it deploy/${RELEASE_NAME}-trino-coordinator -- \
     trino --execute 'SHOW SCHEMAS FROM tpch; '
+
+
+
+kubectl -n $NS get secret gateway-postgres-app \
+        -o jsonpath='{.data.password}' | base64 -d
+70CafDjgG7yD2slZUehJOdE5
